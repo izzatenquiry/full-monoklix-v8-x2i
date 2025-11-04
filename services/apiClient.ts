@@ -123,32 +123,36 @@ export const fetchWithTokenRotation = async (
     tokensToTry = [{ token: specificToken, createdAt: 'N/A' }];
   } else {
     const personalToken = getPersonalToken();
-    let sharedTokens = getSharedTokens();
 
-    // Shuffle the shared tokens to distribute the load
-    for (let i = sharedTokens.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [sharedTokens[i], sharedTokens[j]] = [sharedTokens[j], sharedTokens[i]];
-    }
+    // **BUG FIX: Absolute priority for personal token**
+    // If a personal token exists, ONLY use that token. Do not fall back to shared tokens.
+    if (personalToken) {
+        tokensToTry = [personalToken];
+    } else {
+        // If no personal token, proceed with the shared token rotation logic.
+        let sharedTokens = getSharedTokens();
 
-    if (sharedTokens.length === 0) {
-        console.log(`[API Client] No shared tokens in session for ${logContext}. Attempting re-fetch.`);
-        try {
-            const newTokens = await getVeoAuthTokens();
-            if (newTokens && newTokens.length > 0) {
-                sessionStorage.setItem('veoAuthTokens', JSON.stringify(newTokens));
-                sharedTokens = newTokens;
-                console.log(`[API Client] Successfully re-fetched ${newTokens.length} shared tokens.`);
-            }
-        } catch (e) {
-            console.error('[API Client] Failed to re-fetch auth tokens:', e);
+        // Shuffle the shared tokens to distribute the load
+        for (let i = sharedTokens.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [sharedTokens[i], sharedTokens[j]] = [sharedTokens[j], sharedTokens[i]];
         }
+
+        if (sharedTokens.length === 0) {
+            console.log(`[API Client] No shared tokens in session for ${logContext}. Attempting re-fetch.`);
+            try {
+                const newTokens = await getVeoAuthTokens();
+                if (newTokens && newTokens.length > 0) {
+                    sessionStorage.setItem('veoAuthTokens', JSON.stringify(newTokens));
+                    sharedTokens = newTokens;
+                    console.log(`[API Client] Successfully re-fetched ${newTokens.length} shared tokens.`);
+                }
+            } catch (e) {
+                console.error('[API Client] Failed to re-fetch auth tokens:', e);
+            }
+        }
+        tokensToTry = sharedTokens;
     }
-    
-    tokensToTry = [
-      ...(personalToken ? [personalToken] : []),
-      ...sharedTokens
-    ];
   }
 
   if (tokensToTry.length === 0) {
@@ -161,7 +165,7 @@ export const fetchWithTokenRotation = async (
   for (let i = 0; i < tokensToTry.length; i++) {
     const currentToken = tokensToTry[i];
     const isPersonal = currentToken.createdAt === 'personal';
-    const tokenIdentifier = isPersonal ? 'Personal Token' : `Shared Token #${i - (getPersonalToken() ? 1 : 0) + 1}`;
+    const tokenIdentifier = isPersonal ? 'Personal Token' : `Shared Token #${i + 1}`;
     
     if (onStatusUpdate) onStatusUpdate(`Attempting generation with ${tokenIdentifier}...`);
     console.log(`[API Client] Attempting ${logContext} with ${tokenIdentifier} (...${currentToken.token.slice(-6)})`);
@@ -197,6 +201,9 @@ export const fetchWithTokenRotation = async (
 
       if (isPersonal) {
         eventBus.dispatch('personalTokenFailed');
+        // Since we are now ONLY trying the personal token if it exists,
+        // we must throw the error immediately upon its failure.
+        throw lastError; 
       }
 
       if (i < tokensToTry.length - 1) {
